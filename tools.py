@@ -243,43 +243,6 @@ def _format_work_context(data: Dict, limit: int = 10) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_interests(data: Dict) -> str:
-    """
-    Formate les intérêts professionnels (Code RIASEC).
-    Calcule également le 'Code Holland' (ex: IC, RIA) basé sur les top scores.
-    """
-    if not data or 'error' in data:
-        return "Données d'intérêts indisponibles."
-
-    items = data.get('element', [])
-    if not items:
-        return "Aucun profil d'intérêt."
-
-    # Tri par score 'occupational_interest' décroissant
-    items.sort(key=lambda x: x.get('occupational_interest', 0), reverse=True)
-
-    formatted_lines = []
-    high_interest_letters = []
-
-    for item in items:
-        name = item.get('name', 'Inconnu')
-        score = item.get('occupational_interest', 0)
-        desc = item.get('description', '')
-
-        # On garde l'initiale des scores élevés pour le code sommaire (ex: > 50 ou top 2)
-        # Ici on prend simplement les 2 premiers pour former le code standard (ex: "IC")
-        if len(high_interest_letters) < 2:
-            high_interest_letters.append(name[0].upper())
-
-        formatted_lines.append(f"- **{name}** (Score: {score}): {desc}")
-
-    # On ajoute le Code Holland en tête de liste pour une lecture rapide
-    holland_code = "".join(high_interest_letters)
-    header = f"**Code Holland (RIASEC)** : {holland_code}\n"
-
-    return header + "\n".join(formatted_lines)
-
-
 # =====================================================================
 # LOGIQUE PRINCIPALE (MAIN LOGIC)
 # =====================================================================
@@ -361,13 +324,7 @@ async def get_details_logic(client, soc_code: str) -> str:
 ## 8. Contexte de Travail (Work Context)
 {_format_work_context(data.get('work_context', {}))}
 
-## 9. Styles de Travail (Work Styles)
-{_format_scored_elements(data.get('work_styles', {}))}
-
-## 10. Intérêts & Valeurs (RIASEC)
-{_format_interests(data.get('interests', {}))}
-
-## 11. Éducation & Diplômes
+## 9. Éducation & Diplômes
 {_format_education(data.get('education', {}))}
 """
     return report

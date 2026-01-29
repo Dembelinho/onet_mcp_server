@@ -85,11 +85,7 @@ class OnetClient:
                 # 9. Work Context (Contexte professionnel)
                 self._get(client, f"online/occupations/{soc_code}/details/work_context", p),
                 # 10. Abilities (Capacités)
-                self._get(client, f"online/occupations/{soc_code}/details/abilities", p),
-                # 11. Interests (Intérêts)
-                self._get(client, f"online/occupations/{soc_code}/details/interests"),
-                # 12. Work Styles (Styles de travail)
-                self._get(client, f"online/occupations/{soc_code}/details/work_styles")
+                self._get(client, f"online/occupations/{soc_code}/details/abilities", p)
             )
 
         return {
@@ -103,7 +99,5 @@ class OnetClient:
             "detailed_work_activities": results[7],
             "job_zone": results[8],
             "work_context": results[9],
-            "abilities": results[10],
-            "interests": results[11],
-            "work_styles": results[12]
+            "abilities": results[10]
         }
