@@ -1,10 +1,8 @@
 from typing import Dict, List
 
-# =====================================================================
 # FONCTIONS DE FORMATAGE (HELPERS)
-# =====================================================================
 
-def _format_tasks(data: Dict, limit: int = 15) -> str:
+def format_tasks(data: Dict, limit: int = 15) -> str:
     """
     Formate la liste des tâches (Tasks) avec leur score d'importance.
     """
@@ -34,7 +32,7 @@ def _format_tasks(data: Dict, limit: int = 15) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_technology(data: Dict, limit_per_cat: int = 6) -> str:
+def format_technology(data: Dict, limit_per_cat: int = 6) -> str:
     """
     Formate les compétences techniques par catégorie, triées par demande sur le marché.
     """
@@ -89,7 +87,7 @@ def _format_technology(data: Dict, limit_per_cat: int = 6) -> str:
     return "\n".join(output_lines)
 
 
-def _format_scored_elements(data: Dict, limit: int = 12) -> str:
+def format_scored_elements(data: Dict, limit: int = 12) -> str:
     """
     Formate les éléments standards (Skills, Knowledge, Abilities) avec score et description.
     Structure attendue : liste sous la clé 'element' contenant {name, importance, description}.
@@ -116,7 +114,7 @@ def _format_scored_elements(data: Dict, limit: int = 12) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_education(data: Dict) -> str:
+def format_education(data: Dict) -> str:
     """
     Formate les niveaux d'éducation requis par pourcentage de répondants.
     """
@@ -150,7 +148,7 @@ def _format_education(data: Dict) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_dwa(data: Dict, limit: int = 35) -> str:
+def format_dwa(data: Dict, limit: int = 35) -> str:
     """
     Formate les activités de travail détaillées (DWAs). C'est une liste plate.
     """
@@ -173,7 +171,7 @@ def _format_dwa(data: Dict, limit: int = 35) -> str:
     return "\n".join(formatted_lines)
 
 
-def _format_job_zone(data: Dict) -> str:
+def format_job_zone(data: Dict) -> str:
     """
     Formate les informations de la Zone d'Emploi (Job Zone).
     Indique le niveau de préparation nécessaire.
@@ -203,7 +201,7 @@ def _format_job_zone(data: Dict) -> str:
     )
 
 
-def _format_work_context(data: Dict, limit: int = 10) -> str:
+def format_work_context(data: Dict, limit: int = 10) -> str:
     """
     Formate le contexte de travail en extrayant la condition la plus fréquente.
     """
@@ -242,89 +240,3 @@ def _format_work_context(data: Dict, limit: int = 10) -> str:
 
     return "\n".join(formatted_lines)
 
-
-# =====================================================================
-# LOGIQUE PRINCIPALE (MAIN LOGIC)
-# =====================================================================
-async def search_occupation_logic(client, keyword: str) -> str:
-    """Logique de recherche et formatage des résultats."""
-    data = await client.search_occupation(keyword)
-
-    # Gestion des erreurs HTTP
-    if "error" in data:
-        return f"Erreur lors de la recherche : {data.get('detail', data['error'])}"
-
-    if "occupation" not in data or not data["occupation"]:
-        return "Aucun métier trouvé pour ce mot-clé."
-
-    # Formatage Markdown pour le LLM
-    result_text = f"Résultats trouvés pour '{keyword}' :\n"
-    for item in data["occupation"]:
-        code = item.get('code')
-        title = item.get('title')
-        result_text += f"- **{title}** (Code SOC: `{code}`)\n"
-
-    result_text += "\nUtilisez le Code SOC pour obtenir les détails."
-    return result_text
-
-
-async def get_details_logic(client, soc_code: str) -> str:
-    """Logique d'agrégation et de création du rapport complet."""
-
-    # Nettoyage préventif du code
-    clean_code = soc_code.strip().replace("'", "").replace('"', "")
-
-    data = await client.get_full_occupation_details(clean_code)
-
-    summary = data.get('summary', {})
-    if "error" in summary:
-        return (f"ERREUR API O*NET pour le code '{clean_code}'\n"
-                f"Détail : {summary.get('detail', summary)}\n")
-
-    # Construction du rapport
-    title = summary.get('title')
-    desc = summary.get('description')
-    # --- EXTRACTION DES TITRES SIMILAIRES ---
-    sample_titles = summary.get('sample_of_reported_titles', [])
-    sample_titles_str = ", ".join(sample_titles) if sample_titles else "Aucun titre similaire disponible."
-
-    report = f"""
-# FICHE MÉTIER : {title} **Code SOC** : {summary.get('code')}
-
-## 📝 Description
-{desc}
-
-## 📌 Titres Similaires (Reported Titles)
-{sample_titles_str}
-
-## Zone d'Emploi (Job Zone)
-{_format_job_zone(data.get('job_zone', {}))}
-
-## 1. Tâches Principales
-{_format_tasks(data.get('tasks', {}))}
-
-## 2. Activités Professionnelles Générales (Work Activities)
-{_format_scored_elements(data.get('work_activities', {}))}
-
-## 3. Activités Détaillées (Detailed Work Activities)
-{_format_dwa(data.get('detailed_work_activities', {}))}
-
-## 4. Technologies & Outils
-{_format_technology(data.get('technology_skills', {}), limit_per_cat=6)}
-
-## 5. Compétences Transversales (Skills)
-{_format_scored_elements(data.get('skills', {}))}
-
-## 6. Capacités (Abilities)
-{_format_scored_elements(data.get('abilities', {}))}
-
-## 7. Connaissances (Knowledge)
-{_format_scored_elements(data.get('knowledge', {}))}
-
-## 8. Contexte de Travail (Work Context)
-{_format_work_context(data.get('work_context', {}))}
-
-## 9. Éducation & Diplômes
-{_format_education(data.get('education', {}))}
-"""
-    return report

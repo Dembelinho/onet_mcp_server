@@ -44,9 +44,11 @@ Le serveur expose les tools suivants:
 - Sortie: fiche metier complete au format Markdown
 
 ## Structure du projet
-- `main.py`: initialisation du serveur MCP et declaration des tools
-- `onet_client.py`: client API O*NET (appels HTTP)
-- `tools.py`: logique de formatage et generation des rapports
+- `main.py`: point d'entree unique (tres court)
+- `app/__init__.py`: initialisation du package
+- `app/client.py`: client API O*NET (appels HTTP bruts)
+- `app/formatters.py`: fonctions `_format_xxx` pour les sorties
+- `app/logic.py`: orchestration entre client et formatters
 - `requirements.txt`: dependances Python
 
 ## Notes
