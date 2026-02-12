@@ -59,50 +59,57 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
 active_connections = {}
 
 
+# --- Remplacer handle_sse par ceci ---
 async def handle_sse(request: Request):
     session_id = str(uuid.uuid4())
+    print(f"✨ [SSE] Nouvelle session créée : {session_id}")  # Log debug
 
     async def event_generator():
-        # 1. Création des tuyaux (Streams)
-        # in_stream: Pour envoyer des données AU serveur (depuis POST)
         in_send, in_recv = anyio.create_memory_object_stream(10)
-        # out_stream: Pour lire les données DU serveur (vers SSE)
         out_send, out_recv = anyio.create_memory_object_stream(10)
 
-        # On enregistre le canal d'entrée dans la liste globale pour le POST
         active_connections[session_id] = in_send
 
-        # Options d'init
+        # Options d'initialisation explicites
         init_options = server.create_initialization_options()
 
-        # 2. On lance le serveur et la boucle de lecture en parallèle
-        async with anyio.create_task_group() as tg:
-            # Lancement du serveur MCP (Il lit in_recv et écrit dans out_send)
-            # On utilise start_soon pour ne pas bloquer
-            tg.start_soon(server.run, in_recv, out_send, init_options)
+        try:
+            async with anyio.create_task_group() as tg:
+                # Lancement du serveur MCP
+                tg.start_soon(server.run, in_recv, out_send, init_options)
 
-            # Envoi de l'URL du endpoint POST avec l'ID de session
-            yield {
-                "event": "endpoint",
-                "data": f"/messages?session_id={session_id}"
-            }
+                # Envoi de l'endpoint
+                yield {
+                    "event": "endpoint",
+                    "data": f"/messages?session_id={session_id}"
+                }
 
-            # Boucle de lecture des réponses du serveur pour les envoyer au client SSE
-            async for message in out_recv:
-                if isinstance(message, types.JSONRPCMessage):
-                    yield {
-                        "event": "message",
-                        "data": message.model_dump_json()
-                    }
-                elif isinstance(message, Exception):
-                    yield {
-                        "event": "error",
-                        "data": str(message)
-                    }
+                # Boucle de lecture
+                async for message in out_recv:
+                    try:
+                        if isinstance(message, types.JSONRPCMessage):
+                            yield {
+                                "event": "message",
+                                "data": message.model_dump_json()
+                            }
+                        elif isinstance(message, Exception):
+                            print(f"❌ [SSE] Erreur interne MCP : {message}")
+                            yield {
+                                "event": "error",
+                                "data": str(message)
+                            }
+                    except Exception as e:
+                        print(f"❌ [SSE] Erreur lors du yield : {e}")
+                        raise  # On relance pour sortir proprement
 
-        # Nettoyage à la déconnexion
-        if session_id in active_connections:
-            del active_connections[session_id]
+        except Exception as e:
+            print(f"💀 [SSE] Crash critique de la session {session_id} : {str(e)}")
+            # On ne relance pas forcément l'erreur pour ne pas casser Uvicorn,
+            # mais la session est morte.
+        finally:
+            print(f"🧹 [SSE] Nettoyage session {session_id}")
+            if session_id in active_connections:
+                del active_connections[session_id]
 
     return EventSourceResponse(event_generator())
 
