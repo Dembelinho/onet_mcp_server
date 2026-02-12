@@ -4,9 +4,8 @@ WORKDIR /app
 
 # Installation des dépendances
 COPY requirements.txt .
-# On retire pywin32 qui est pour Windows uniquement
-RUN sed -i '/pywin32/d' requirements.txt && \
-    pip install --no-cache-dir --upgrade pip && \
+
+RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copie du code source
