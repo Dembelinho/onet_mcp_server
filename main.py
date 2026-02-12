@@ -1,6 +1,5 @@
 from mcp.server import Server
 import mcp.types as types
-from mcp.server.sse import SseServerTransport
 from starlette.applications import Starlette
 from starlette.routing import Route
 from starlette.requests import Request
@@ -8,97 +7,88 @@ from starlette.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
 import anyio
-import os
+import uuid
 from dotenv import load_dotenv
 
-# Imports de votre logique métier
+# Imports Logic
 from app.client import OnetClient
 from app import logic
 
-# 1. Configuration
 load_dotenv()
 
-# 2. Initialisation du Serveur MCP (Nom interne)
 server = Server("onet-server")
-
-# 3. Initialisation du Client API O*NET
 try:
     onet_client = OnetClient()
 except ValueError as e:
-    print(f"FATAL: Erreur de configuration O*NET: {e}")
+    print(f"Erreur config: {e}")
     exit(1)
 
 
-# 4. Définition des Outils (Tools)
+# --- OUTILS ---
 @server.list_tools()
 async def handle_list_tools() -> list[types.Tool]:
     return [
-        types.Tool(
-            name="search_occupation",
-            description="Recherche un métier par mot-clé (Ex: Data Scientist). Retourne les codes SOC.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "keyword": {"type": "string", "description": "Mot-clé du métier"}
-                },
-                "required": ["keyword"]
-            }
-        ),
-        types.Tool(
-            name="get_occupation_details",
-            description="Récupère le rapport complet (Tâches, Skills, Education) via le code SOC.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "soc_code": {"type": "string", "description": "Le code SOC (Ex: 15-1132.00)"}
-                },
-                "required": ["soc_code"]
-            }
-        )
+        types.Tool(name="search_occupation", description="Recherche métier",
+                   inputSchema={"type": "object", "properties": {"keyword": {"type": "string"}},
+                                "required": ["keyword"]}),
+        types.Tool(name="get_occupation_details", description="Détails métier SOC",
+                   inputSchema={"type": "object", "properties": {"soc_code": {"type": "string"}},
+                                "required": ["soc_code"]})
     ]
 
 
 @server.call_tool()
 async def handle_call_tool(name: str, arguments: dict | None) -> list[types.TextContent]:
-    if not arguments:
-        raise ValueError("Arguments requis")
-
+    if not arguments: raise ValueError("Args required")
     try:
         if name == "search_occupation":
-            keyword = arguments.get("keyword")
-            result = await logic.search_occupation_logic(onet_client, keyword)
-            return [types.TextContent(type="text", text=result)]
-
+            res = await logic.search_occupation_logic(onet_client, arguments.get("keyword"))
         elif name == "get_occupation_details":
-            soc_code = arguments.get("soc_code")
-            result = await logic.get_details_logic(onet_client, soc_code)
-            return [types.TextContent(type="text", text=result)]
-
+            res = await logic.get_details_logic(onet_client, arguments.get("soc_code"))
         else:
-            raise ValueError(f"Outil inconnu: {name}")
-
+            raise ValueError(f"Unknown tool: {name}")
+        return [types.TextContent(type="text", text=res)]
     except Exception as e:
-        # On capture l'erreur pour la renvoyer proprement au LLM
-        return [types.TextContent(type="text", text=f"Erreur lors de l'exécution de l'outil : {str(e)}")]
+        return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
 
-# 5. Gestionnaire SSE (Server-Sent Events) - Version Robuste
+# --- GESTION DES SESSIONS ET STREAMS (CŒUR DU SYSTÈME) ---
+
+# Dictionnaire pour stocker les canaux d'écriture des sessions actives
+# Key: session_id, Value: MemoryObjectSendStream
+active_connections = {}
+
+
 async def handle_sse(request: Request):
+    session_id = str(uuid.uuid4())
+
     async def event_generator():
-        # Création des canaux de communication (Streams)
-        read_stream, write_stream = anyio.create_memory_object_stream(10)
+        # 1. Création des tuyaux (Streams)
+        # in_stream: Pour envoyer des données AU serveur (depuis POST)
+        in_send, in_recv = anyio.create_memory_object_stream(10)
+        # out_stream: Pour lire les données DU serveur (vers SSE)
+        out_send, out_recv = anyio.create_memory_object_stream(10)
 
-        # On lance le serveur MCP en tâche de fond avec ces streams
-        async with server.run(read_stream, write_stream, server.create_initialization_options()) as streams:
+        # On enregistre le canal d'entrée dans la liste globale pour le POST
+        active_connections[session_id] = in_send
 
-            # 1. On indique au client où envoyer les messages POST (l'endpoint /messages)
+        # Options d'init
+        init_options = server.create_initialization_options()
+
+        # 2. On lance le serveur et la boucle de lecture en parallèle
+        async with anyio.create_task_group() as tg:
+            # Lancement du serveur MCP (Il lit in_recv et écrit dans out_send)
+            # On utilise start_soon pour ne pas bloquer
+            tg.start_soon(server.run, in_recv, out_send, init_options)
+
+            # Envoi de l'URL du endpoint POST avec l'ID de session
             yield {
                 "event": "endpoint",
-                "data": "/messages"
+                "data": f"/messages?session_id={session_id}"
             }
 
-            # 2. On écoute les messages sortants du serveur et on les envoie au client SSE
-            async for message in streams:
+            # Boucle de lecture des réponses du serveur pour les envoyer au client SSE
+            async for message in out_recv:
                 if isinstance(message, types.JSONRPCMessage):
                     yield {
                         "event": "message",
@@ -110,25 +100,34 @@ async def handle_sse(request: Request):
                         "data": str(message)
                     }
 
+        # Nettoyage à la déconnexion
+        if session_id in active_connections:
+            del active_connections[session_id]
+
     return EventSourceResponse(event_generator())
 
 
-# 6. Gestionnaire des Messages Entrants (POST)
 async def handle_messages(request: Request):
-    try:
-        # On lit le JSON envoyé par Claude/Client
-        data = await request.json()
+    # Récupération de l'ID de session
+    session_id = request.query_params.get("session_id")
+    if not session_id or session_id not in active_connections:
+        return JSONResponse({"error": "Session not found or invalid"}, status=404)
 
-        # On le valide et on l'injecte dans le serveur
-        # Note: process_request injecte les données dans le read_stream créé plus haut
-        await server.process_request(request.scope, request.receive, request.send)
+    try:
+        data = await request.json()
+        message = types.JSONRPCMessage.model_validate(data)
+
+        # On récupère le canal d'écriture correspondant à la session
+        write_stream = active_connections[session_id]
+
+        # On injecte le message dans le tuyau
+        await write_stream.send(message)
 
         return JSONResponse({"status": "accepted"})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status=500)
 
 
-# 7. Configuration Starlette
 routes = [
     Route("/sse", endpoint=handle_sse),
     Route("/messages", endpoint=handle_messages, methods=["POST"])
@@ -136,7 +135,5 @@ routes = [
 
 starlette_app = Starlette(routes=routes)
 
-# 8. Lancement
 if __name__ == "__main__":
-    # Écoute sur toutes les interfaces (0.0.0.0) port 8000
     uvicorn.run(starlette_app, host="0.0.0.0", port=8000)
