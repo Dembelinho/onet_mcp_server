@@ -108,24 +108,25 @@ async def handle_sse(request: Request):
 
 
 async def handle_messages(request: Request):
-    # Récupération de l'ID de session
     session_id = request.query_params.get("session_id")
     if not session_id or session_id not in active_connections:
-        return JSONResponse({"error": "Session not found or invalid"}, status=404)
+        return JSONResponse({"error": "Session not found or invalid"}, status_code=404)
 
     try:
         data = await request.json()
         message = types.JSONRPCMessage.model_validate(data)
-
-        # On récupère le canal d'écriture correspondant à la session
         write_stream = active_connections[session_id]
-
-        # On injecte le message dans le tuyau
+        # On essaie d'envoyer le message au serveur MCP
         await write_stream.send(message)
 
-        return JSONResponse({"status": "accepted"})
+        return JSONResponse({"status": "accepted"}, status_code=202)
+
+    except anyio.BrokenResourceError:
+        # Cela arrive si la connexion SSE est morte entre temps
+        return JSONResponse({"error": "Stream connection closed"}, status_code=410)  # 410 Gone
     except Exception as e:
-        return JSONResponse({"error": str(e)}, status=500)
+        # Correction ici : status_code au lieu de status
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 routes = [
