@@ -6,13 +6,16 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 import uvicorn
+import logging
 import anyio
 import uuid
 from dotenv import load_dotenv
-
-# Imports Logic
 from app.client import OnetClient
 from app import logic
+
+# Configuration du logging (pour la prod)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("onet-server")
 
 load_dotenv()
 
@@ -20,7 +23,7 @@ server = Server("onet-server")
 try:
     onet_client = OnetClient()
 except ValueError as e:
-    print(f"Erreur config: {e}")
+    logger.error(f"Erreur de configuration critique : {e}")
     exit(1)
 
 
@@ -49,20 +52,16 @@ async def handle_call_tool(name: str, arguments: dict | None) -> list[types.Text
             raise ValueError(f"Unknown tool: {name}")
         return [types.TextContent(type="text", text=res)]
     except Exception as e:
+        logger.error(f"Erreur outil {name}: {e}")
         return [types.TextContent(type="text", text=f"Error: {str(e)}")]
 
 
-# --- GESTION DES SESSIONS ET STREAMS (CŒUR DU SYSTÈME) ---
+# --- GESTION DES SESSIONS ET STREAMS ---
 
-# Dictionnaire pour stocker les canaux d'écriture des sessions actives
-# Key: session_id, Value: MemoryObjectSendStream
 active_connections = {}
 
-
-# --- Remplacer handle_sse par ceci ---
 async def handle_sse(request: Request):
     session_id = str(uuid.uuid4())
-    print(f"✨ [SSE] Nouvelle session créée : {session_id}")  # Log debug
 
     async def event_generator():
         in_send, in_recv = anyio.create_memory_object_stream(10)
@@ -70,21 +69,17 @@ async def handle_sse(request: Request):
 
         active_connections[session_id] = in_send
 
-        # Options d'initialisation explicites
         init_options = server.create_initialization_options()
 
         try:
             async with anyio.create_task_group() as tg:
-                # Lancement du serveur MCP
                 tg.start_soon(server.run, in_recv, out_send, init_options)
 
-                # Envoi de l'endpoint
                 yield {
                     "event": "endpoint",
                     "data": f"/messages?session_id={session_id}"
                 }
 
-                # Boucle de lecture
                 async for message in out_recv:
                     try:
                         if isinstance(message, types.JSONRPCMessage):
@@ -93,21 +88,18 @@ async def handle_sse(request: Request):
                                 "data": message.model_dump_json()
                             }
                         elif isinstance(message, Exception):
-                            print(f"❌ [SSE] Erreur interne MCP : {message}")
+                            logger.error(f"Erreur interne MCP: {message}")
                             yield {
                                 "event": "error",
                                 "data": str(message)
                             }
                     except Exception as e:
-                        print(f"❌ [SSE] Erreur lors du yield : {e}")
-                        raise  # On relance pour sortir proprement
+                        logger.error(f"Erreur yield SSE: {e}")
+                        raise
 
         except Exception as e:
-            print(f"💀 [SSE] Crash critique de la session {session_id} : {str(e)}")
-            # On ne relance pas forcément l'erreur pour ne pas casser Uvicorn,
-            # mais la session est morte.
+            logger.error(f"Session crash {session_id}: {e}")
         finally:
-            print(f"🧹 [SSE] Nettoyage session {session_id}")
             if session_id in active_connections:
                 del active_connections[session_id]
 
@@ -122,17 +114,16 @@ async def handle_messages(request: Request):
     try:
         data = await request.json()
         message = types.JSONRPCMessage.model_validate(data)
+
         write_stream = active_connections[session_id]
-        # On essaie d'envoyer le message au serveur MCP
         await write_stream.send(message)
 
         return JSONResponse({"status": "accepted"}, status_code=202)
 
     except anyio.BrokenResourceError:
-        # Cela arrive si la connexion SSE est morte entre temps
-        return JSONResponse({"error": "Stream connection closed"}, status_code=410)  # 410 Gone
+        return JSONResponse({"error": "Stream connection closed"}, status_code=410)
     except Exception as e:
-        # Correction ici : status_code au lieu de status
+        logger.error(f"Erreur handle_messages: {e}")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
